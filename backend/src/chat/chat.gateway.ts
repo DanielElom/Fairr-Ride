@@ -1,0 +1,124 @@
+import { Logger } from '@nestjs/common';
+import {
+  ConnectedSocket,
+  MessageBody,
+  OnGatewayConnection,
+  OnGatewayDisconnect,
+  SubscribeMessage,
+  WebSocketGateway,
+  WebSocketServer,
+} from '@nestjs/websockets';
+import { Server, Socket } from 'socket.io';
+import * as jwt from 'jsonwebtoken';
+import { ChatService } from './chat.service';
+import { MessageType } from '../../generated/prisma/enums';
+
+interface AuthSocket extends Socket {
+  userId?: string;
+  userRole?: string;
+}
+
+@WebSocketGateway({ cors: { origin: '*' }, namespace: '/chat' })
+export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
+  @WebSocketServer() server!: Server;
+  private readonly logger = new Logger(ChatGateway.name);
+
+  constructor(private chatService: ChatService) {}
+
+  handleConnection(client: AuthSocket) {
+    const token =
+      (client.handshake.auth.token as string) ||
+      (client.handshake.query['token'] as string);
+
+    if (!token) {
+      this.logger.warn(`Chat client ${client.id} connected without token — disconnecting`);
+      client.disconnect();
+      return;
+    }
+
+    try {
+      const secret = process.env['JWT_SECRET'] || 'fallback-secret';
+      const payload = jwt.verify(token, secret) as {
+        sub: string;
+        role: string;
+      };
+      client.userId = payload.sub;
+      client.userRole = payload.role;
+
+      if (payload.role === 'ADMIN') {
+        client.join('admin:chat');
+        this.logger.log(`Admin ${payload.sub} joined admin:chat room`);
+      }
+
+      this.logger.log(
+        `Chat client connected: ${client.id} userId=${payload.sub} role=${payload.role}`,
+      );
+    } catch {
+      this.logger.warn(`Chat client ${client.id} invalid token — disconnecting`);
+      client.disconnect();
+    }
+  }
+
+  handleDisconnect(client: AuthSocket) {
+    this.logger.log(`Chat client disconnected: ${client.id}`);
+  }
+
+  @SubscribeMessage('join_order_chat')
+  async handleJoinOrderChat(
+    @ConnectedSocket() client: AuthSocket,
+    @MessageBody() data: { orderId: string },
+  ) {
+    if (!client.userId || !data?.orderId) return;
+
+    try {
+      const history = await this.chatService.getChatHistory(
+        data.orderId,
+        client.userId,
+        client.userRole ?? '',
+      );
+      client.join(`chat:${data.orderId}`);
+      this.logger.log(`${client.userId} joined chat:${data.orderId}`);
+      client.emit('chat_history', history);
+    } catch (err: any) {
+      client.emit('error', { message: err.message });
+    }
+  }
+
+  @SubscribeMessage('send_message')
+  async handleSendMessage(
+    @ConnectedSocket() client: AuthSocket,
+    @MessageBody()
+    data: { orderId: string; content: string; messageType: MessageType },
+  ) {
+    if (!client.userId || !data?.orderId) return;
+
+    try {
+      const message = await this.chatService.sendMessage(
+        client.userId,
+        data.orderId,
+        data.content,
+        data.messageType ?? MessageType.TEXT,
+      );
+
+      this.server.to(`chat:${data.orderId}`).emit('new_message', message);
+      this.server.to('admin:chat').emit('new_message', { ...message, orderId: data.orderId });
+    } catch (err: any) {
+      client.emit('error', { message: err.message });
+    }
+  }
+
+  @SubscribeMessage('leave_order_chat')
+  handleLeaveOrderChat(
+    @ConnectedSocket() client: AuthSocket,
+    @MessageBody() data: { orderId: string },
+  ) {
+    if (data?.orderId) {
+      client.leave(`chat:${data.orderId}`);
+      this.logger.log(`${client.userId} left chat:${data.orderId}`);
+    }
+  }
+
+  emitCallLogged(orderId: string, callLog: any) {
+    this.server.to('admin:chat').emit('call_logged', { ...callLog, orderId });
+  }
+}

@@ -1,0 +1,31 @@
+import { Injectable, Logger } from '@nestjs/common';
+
+@Injectable()
+export class SmsService {
+  private readonly logger = new Logger(SmsService.name);
+  private readonly at: any;
+
+  constructor() {
+    const apiKey = process.env.AFRICAS_TALKING_API_KEY;
+    const username = process.env.AFRICAS_TALKING_USERNAME || 'sandbox';
+
+    if (apiKey) {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const AfricasTalking = require('africastalking');
+      this.at = AfricasTalking({ username, apiKey });
+    }
+  }
+
+  async sendOtp(phone: string, otp: string): Promise<void> {
+    const message = `Your Fair-Ride OTP is: ${otp}. Valid for 10 minutes.`;
+    await this.sendSms(phone, message);
+  }
+
+  async sendSms(phone: string, message: string): Promise<void> {
+    if (!this.at) {
+      this.logger.log(`[DEV SMS] ${phone}: ${message}`);
+      return;
+    }
+    await this.at.SMS.send({ to: phone, message });
+  }
+}

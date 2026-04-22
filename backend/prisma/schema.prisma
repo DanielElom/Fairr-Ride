@@ -1,0 +1,509 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  INDIVIDUAL
+  VENDOR
+  RESTAURANT
+  CORPORATE
+  RIDER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  PENDING_VERIFICATION
+}
+
+enum VerificationStatus {
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum CommissionModel {
+  SUBSCRIPTION
+  PERCENTAGE
+}
+
+enum RiderType {
+  FLEET
+  MARKETPLACE
+}
+
+enum OrderStatus {
+  PENDING
+  ASSIGNED
+  EN_ROUTE_TO_PICKUP
+  ARRIVED_AT_PICKUP
+  PICKED_UP
+  IN_TRANSIT
+  ARRIVED_AT_DELIVERY
+  DELIVERED_REQUESTED
+  DELIVERED_CONFIRMED
+  DISPUTED
+  CANCELLED
+}
+
+enum DeliveryType {
+  ON_DEMAND
+  SCHEDULED
+  SAME_DAY
+}
+
+enum PaymentMethod {
+  CARD
+  OPAY
+  BANK_TRANSFER
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  AUTHORIZED
+  CAPTURED
+  FAILED
+  REFUNDED
+}
+
+enum PayoutStatus {
+  PENDING
+  PROCESSING
+  PAID
+  FAILED
+}
+
+enum SubscriptionPlan {
+  BUSINESS_VOLUME
+  BUSINESS_FLAT
+  RIDER_WEEKLY
+  RIDER_MONTHLY
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  EXPIRED
+  CANCELLED
+}
+
+enum NotificationType {
+  ORDER_UPDATE
+  PAYMENT
+  CHAT
+  SYSTEM
+  PROMO
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+}
+
+enum CallType {
+  IN_APP
+  DIAL_OUT
+}
+
+enum DisputeStatus {
+  OPEN
+  UNDER_REVIEW
+  RESOLVED
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id           String     @id @default(cuid())
+  role         UserRole
+  status       UserStatus @default(PENDING_VERIFICATION)
+  phone        String     @unique
+  email        String?    @unique
+  name         String?
+  profilePhoto String?
+
+  companyName        String?
+  businessAddress    String?
+  cacDocument        String?
+  verificationStatus VerificationStatus?
+
+  fcmToken     String?
+
+  otpCode      String?
+  otpExpiresAt DateTime?
+
+  businessAccount      BusinessAccount?
+  riderProfile         RiderProfile?
+  ordersAsUser         Order[]          @relation("UserOrders")
+  savedAddresses       SavedAddress[]
+  ratingsGiven         Rating[]         @relation("RaterUser")
+  ratingsReceived      Rating[]         @relation("RatedUser")
+  notifications        Notification[]
+  chatMessagesSent     ChatMessage[]    @relation("ChatSender")
+  chatMessagesReceived ChatMessage[]    @relation("ChatReceiver")
+  callLogsCaller       CallLog[]        @relation("CallCaller")
+  callLogsReceiver     CallLog[]        @relation("CallReceiver")
+  disputesOpened       Dispute[]        @relation("DisputeUser")
+  subscriptions        Subscription[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([role])
+  @@index([status])
+  @@index([phone])
+}
+
+model BusinessAccount {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  orders Order[] @relation("BusinessOrders")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+}
+
+model RiderProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  idDocument         String?
+  licenseDocument    String?
+  bikePapers         String?
+  bvn                String?
+  nin                String?
+  verificationStatus VerificationStatus @default(PENDING)
+
+  commissionModel CommissionModel @default(PERCENTAGE)
+  riderType       RiderType       @default(MARKETPLACE)
+
+  isOnline      Boolean @default(false)
+  walletBalance Decimal @default(0) @db.Decimal(12, 2)
+  rating        Decimal @default(0) @db.Decimal(3, 2)
+  ratingCount   Int     @default(0)
+
+  bankName          String?
+  bankAccountNumber String?
+  bankAccountName   String?
+
+  latitude        Float?
+  longitude       Float?
+  acceptanceRate  Float    @default(0)
+  avgResponseTime Float    @default(0)
+  lastSeenAt      DateTime?
+
+  orders          Order[]        @relation("RiderOrders")
+  payouts         Payout[]
+  ratingsReceived Rating[]       @relation("RatedRider")
+  ratingsGiven    Rating[]       @relation("RaterRider")
+  subscriptions   Subscription[]
+  disputes        Dispute[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([isOnline])
+  @@index([verificationStatus])
+}
+
+model Order {
+  id     String      @id @default(cuid())
+  status OrderStatus @default(PENDING)
+
+  userId            String
+  user              User             @relation("UserOrders", fields: [userId], references: [id])
+  riderId           String?
+  rider             RiderProfile?    @relation("RiderOrders", fields: [riderId], references: [id])
+  businessAccountId String?
+  businessAccount   BusinessAccount? @relation("BusinessOrders", fields: [businessAccountId], references: [id])
+
+  pickupAddress   String
+  pickupLatitude  Decimal @db.Decimal(10, 7)
+  pickupLongitude Decimal @db.Decimal(10, 7)
+
+  dropoffAddress   String
+  dropoffLatitude  Decimal @db.Decimal(10, 7)
+  dropoffLongitude Decimal @db.Decimal(10, 7)
+
+  distanceKm      Decimal @db.Decimal(8, 2)
+  baseFare        Decimal @db.Decimal(10, 2)
+  perKmRate       Decimal @db.Decimal(10, 2)
+  surgeMultiplier Decimal @default(1) @db.Decimal(4, 2)
+  finalPrice      Decimal @db.Decimal(10, 2)
+
+  deliveryType DeliveryType
+  scheduledAt  DateTime?
+  isPremium    Boolean      @default(false)
+
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+
+  cancellationReason String?
+
+  gpsLogs      GpsLog[]
+  payment      Payment?
+  ratings      Rating[]
+  chatMessages ChatMessage[]
+  callLogs     CallLog[]
+  dispute      Dispute?
+  notification Notification[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([riderId])
+  @@index([businessAccountId])
+  @@index([status])
+  @@index([paymentStatus])
+  @@index([deliveryType])
+  @@index([scheduledAt])
+}
+
+model GpsLog {
+  id        String   @id @default(cuid())
+  orderId   String
+  order     Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  latitude  Decimal  @db.Decimal(10, 7)
+  longitude Decimal  @db.Decimal(10, 7)
+  timestamp DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([latitude, longitude])
+  @@index([timestamp])
+}
+
+model Payment {
+  id      String @id @default(cuid())
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  grossAmount      Decimal      @db.Decimal(10, 2)
+  commissionAmount Decimal      @db.Decimal(10, 2)
+  riderPayout      Decimal      @db.Decimal(10, 2)
+  gatewayReference String?
+  payoutStatus     PayoutStatus @default(PENDING)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([payoutStatus])
+}
+
+model Subscription {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
+
+  riderId String?
+  rider   RiderProfile? @relation(fields: [riderId], references: [id])
+
+  plan      SubscriptionPlan
+  price     Decimal            @db.Decimal(10, 2)
+  startDate DateTime
+  endDate   DateTime
+  autoRenew Boolean            @default(true)
+  status    SubscriptionStatus @default(ACTIVE)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([riderId])
+  @@index([status])
+  @@index([endDate])
+}
+
+model Rating {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  raterUserId  String?
+  raterUser    User?         @relation("RaterUser", fields: [raterUserId], references: [id])
+  raterRiderId String?
+  raterRider   RiderProfile? @relation("RaterRider", fields: [raterRiderId], references: [id])
+
+  ratedUserId  String?
+  ratedUser    User?         @relation("RatedUser", fields: [ratedUserId], references: [id])
+  ratedRiderId String?
+  ratedRider   RiderProfile? @relation("RatedRider", fields: [ratedRiderId], references: [id])
+
+  stars   Int
+  comment String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([raterUserId])
+  @@index([raterRiderId])
+  @@index([ratedUserId])
+  @@index([ratedRiderId])
+}
+
+model Notification {
+  id      String           @id @default(cuid())
+  userId  String
+  user    User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orderId String?
+  order   Order?           @relation(fields: [orderId], references: [id])
+  type    NotificationType
+  title   String
+  body    String
+  isRead  Boolean          @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([orderId])
+  @@index([isRead])
+  @@index([type])
+}
+
+model ChatMessage {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  senderId   String
+  sender     User   @relation("ChatSender", fields: [senderId], references: [id])
+  receiverId String
+  receiver   User   @relation("ChatReceiver", fields: [receiverId], references: [id])
+
+  content     String
+  messageType MessageType @default(TEXT)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([senderId])
+  @@index([receiverId])
+}
+
+model CallLog {
+  id      String @id @default(cuid())
+  orderId String
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  callerId   String
+  caller     User   @relation("CallCaller", fields: [callerId], references: [id])
+  receiverId String
+  receiver   User   @relation("CallReceiver", fields: [receiverId], references: [id])
+
+  callType        CallType
+  durationSeconds Int      @default(0)
+  timestamp       DateTime @default(now())
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([callerId])
+  @@index([receiverId])
+}
+
+model Dispute {
+  id      String @id @default(cuid())
+  orderId String @unique
+  order   Order  @relation(fields: [orderId], references: [id])
+
+  userId  String
+  user    User         @relation("DisputeUser", fields: [userId], references: [id])
+  riderId String
+  rider   RiderProfile @relation(fields: [riderId], references: [id])
+
+  issueType       String
+  description     String
+  status          DisputeStatus @default(OPEN)
+  resolutionNotes String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([orderId])
+  @@index([userId])
+  @@index([riderId])
+  @@index([status])
+}
+
+model Payout {
+  id      String       @id @default(cuid())
+  riderId String
+  rider   RiderProfile @relation(fields: [riderId], references: [id])
+
+  amount      Decimal      @db.Decimal(10, 2)
+  status      PayoutStatus @default(PENDING)
+  requestedAt DateTime     @default(now())
+  paidAt      DateTime?
+
+  bankName          String
+  bankAccountNumber String
+  bankAccountName   String
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([riderId])
+  @@index([status])
+  @@index([requestedAt])
+}
+
+model SavedAddress {
+  id     String @id @default(cuid())
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  label     String
+  address   String
+  latitude  Decimal @db.Decimal(10, 7)
+  longitude Decimal @db.Decimal(10, 7)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([latitude, longitude])
+}
+
+model PromoCode {
+  id            String    @id @default(cuid())
+  code          String    @unique
+  discountType  String
+  discountValue Float
+  maxUses       Int       @default(100)
+  usedCount     Int       @default(0)
+  isActive      Boolean   @default(true)
+  expiresAt     DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model AppConfig {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
+
+  updatedAt DateTime @updatedAt
+}

@@ -1,0 +1,316 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { PaystackService } from './paystack/paystack.service';
+import { OpayService } from './opay/opay.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { NotificationsService } from '../notifications/notifications.service';
+import {
+  OrderStatus,
+  PaymentMethod,
+  PaymentStatus,
+} from '../../generated/prisma/enums';
+
+const PLATFORM_RATE = 0.15;
+const SUBSCRIPTION_PLATFORM_RATE = 0.05;
+
+@Injectable()
+export class PaymentsService {
+  private readonly logger = new Logger(PaymentsService.name);
+
+  constructor(
+    private prisma: PrismaService,
+    private paystack: PaystackService,
+    private opay: OpayService,
+    private subscriptions: SubscriptionsService,
+    private notifications: NotificationsService,
+  ) {}
+
+  private get db() {
+    return this.prisma as any;
+  }
+
+  async initiatePayment(userId: string, orderId: string) {
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: { user: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.userId !== userId) throw new ForbiddenException('Access denied');
+    if (order.paymentStatus !== PaymentStatus.PENDING) {
+      throw new BadRequestException(
+        `Payment already ${order.paymentStatus.toLowerCase()}`,
+      );
+    }
+
+    switch (order.paymentMethod as PaymentMethod) {
+      case PaymentMethod.CARD:
+      case PaymentMethod.BANK_TRANSFER:
+        return this.initiatePaystack(order);
+      case PaymentMethod.OPAY:
+        return this.initiateOpay(order);
+      case PaymentMethod.CASH:
+        return { message: 'Cash payment — pay rider on delivery', orderId };
+      default:
+        throw new BadRequestException('Unsupported payment method');
+    }
+  }
+
+  async initiatePaystack(order: any) {
+    const amountKobo = Math.round(parseFloat(order.finalPrice.toString()) * 100);
+    const reference = `fr-${order.id}-${Date.now()}`;
+    const callbackUrl = `${process.env['APP_URL'] || 'http://localhost:3000'}/payment/verify?ref=${reference}`;
+
+    const result = await this.paystack.initializeTransaction(
+      order.user.email || `${order.user.phone}@fairride.ng`,
+      amountKobo,
+      reference,
+      callbackUrl,
+    );
+
+    await this.db.order.update({
+      where: { id: order.id },
+      data: { paymentStatus: PaymentStatus.AUTHORIZED },
+    });
+
+    return {
+      paymentMethod: order.paymentMethod,
+      authorizationUrl: result.authorizationUrl,
+      reference: result.reference,
+      amount: parseFloat(order.finalPrice.toString()),
+    };
+  }
+
+  async initiateOpay(order: any) {
+    const amount = parseFloat(order.finalPrice.toString());
+    const reference = `fr-${order.id}-${Date.now()}`;
+
+    const result = await this.opay.initiatePayment(
+      amount,
+      reference,
+      order.user.phone,
+    );
+
+    await this.db.order.update({
+      where: { id: order.id },
+      data: { paymentStatus: PaymentStatus.AUTHORIZED },
+    });
+
+    return {
+      paymentMethod: PaymentMethod.OPAY,
+      paymentUrl: result.paymentUrl,
+      reference: result.reference,
+      amount,
+    };
+  }
+
+  async confirmCashPayment(riderUserId: string, orderId: string) {
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: { rider: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+    if (order.rider?.userId !== riderUserId) {
+      throw new ForbiddenException('Only the assigned rider can confirm cash payment');
+    }
+    if (order.paymentMethod !== PaymentMethod.CASH) {
+      throw new BadRequestException('Order payment method is not CASH');
+    }
+    if (order.paymentStatus === PaymentStatus.CAPTURED) {
+      throw new BadRequestException('Payment already captured');
+    }
+
+    const grossAmount = parseFloat(order.finalPrice.toString());
+    return this.splitAndCredit(orderId, grossAmount, order.rider.userId);
+  }
+
+  async splitAndCredit(
+    orderId: string,
+    grossAmount: number,
+    riderUserId: string,
+  ) {
+    const isSubscribed = await this.subscriptions.hasActiveSubscription(riderUserId);
+    const platformRate = isSubscribed ? SUBSCRIPTION_PLATFORM_RATE : PLATFORM_RATE;
+    const platformCommission = Math.round(grossAmount * platformRate * 100) / 100;
+    const riderShare = Math.round((grossAmount - platformCommission) * 100) / 100;
+
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: { rider: true },
+    });
+
+    const [payment] = await Promise.all([
+      this.db.payment.upsert({
+        where: { orderId },
+        create: {
+          orderId,
+          grossAmount,
+          commissionAmount: platformCommission,
+          riderPayout: riderShare,
+          payoutStatus: 'PENDING',
+        },
+        update: {
+          grossAmount,
+          commissionAmount: platformCommission,
+          riderPayout: riderShare,
+          payoutStatus: 'PENDING',
+        },
+      }),
+      this.db.order.update({
+        where: { id: orderId },
+        data: { paymentStatus: PaymentStatus.CAPTURED },
+      }),
+      ...(order.rider
+        ? [
+            this.db.riderProfile.update({
+              where: { id: order.rider.id },
+              data: {
+                walletBalance: { increment: riderShare },
+              },
+            }),
+          ]
+        : []),
+    ]);
+
+    this.logger.log(
+      `Payment split for order ${orderId}: ` +
+        `gross=₦${grossAmount} rider=₦${riderShare} platform=₦${platformCommission}`,
+    );
+
+    this.notifications.sendOrderNotification(orderId, 'PAYMENT_CAPTURED').catch(() => null);
+
+    return payment;
+  }
+
+  async handlePaystackWebhook(rawBody: string, signature: string) {
+    if (!this.paystack.verifyWebhookSignature(rawBody, signature)) {
+      throw new UnauthorizedException('Invalid Paystack webhook signature');
+    }
+
+    const payload = JSON.parse(rawBody);
+    const event: string = payload.event;
+
+    if (event !== 'charge.success') {
+      return { received: true };
+    }
+
+    const reference: string = payload.data?.reference ?? '';
+    // reference format: fr-<orderId>-<timestamp>
+    const orderId = reference.split('-').slice(1, -1).join('-');
+    if (!orderId) return { received: true };
+
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: { rider: true },
+    });
+    if (!order || order.paymentStatus === PaymentStatus.CAPTURED) {
+      return { received: true };
+    }
+
+    await this.db.payment.upsert({
+      where: { orderId },
+      create: {
+        orderId,
+        grossAmount: 0,
+        commissionAmount: 0,
+        riderPayout: 0,
+        gatewayReference: reference,
+      },
+      update: { gatewayReference: reference },
+    });
+
+    const riderUserId = order.rider?.userId ?? '';
+    const grossAmount = parseFloat(order.finalPrice.toString());
+    await this.splitAndCredit(orderId, grossAmount, riderUserId);
+
+    return { received: true };
+  }
+
+  async handleOpayWebhook(rawBody: string, signature: string) {
+    if (!this.opay.verifyWebhookSignature(rawBody, signature)) {
+      throw new UnauthorizedException('Invalid Opay webhook signature');
+    }
+
+    const payload = JSON.parse(rawBody);
+    if (payload.status !== 'SUCCESS') return { received: true };
+
+    const reference: string = payload.reference ?? '';
+    const orderId = reference.split('-').slice(1, -1).join('-');
+    if (!orderId) return { received: true };
+
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: { rider: true },
+    });
+    if (!order || order.paymentStatus === PaymentStatus.CAPTURED) {
+      return { received: true };
+    }
+
+    const riderUserId = order.rider?.userId ?? '';
+    const grossAmount = parseFloat(order.finalPrice.toString());
+    await this.splitAndCredit(orderId, grossAmount, riderUserId);
+
+    return { received: true };
+  }
+
+  async getPaymentByOrder(orderId: string, requesterId: string, requesterRole: string) {
+    const order = await this.db.order.findUnique({
+      where: { id: orderId },
+      include: { rider: { select: { userId: true } } },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    const isOwner = order.userId === requesterId;
+    const isRider = order.rider?.userId === requesterId;
+    const isAdmin = requesterRole === 'ADMIN';
+    if (!isOwner && !isRider && !isAdmin) throw new ForbiddenException('Access denied');
+
+    const payment = await this.db.payment.findUnique({ where: { orderId } });
+    if (!payment) throw new NotFoundException('No payment record for this order');
+    return payment;
+  }
+
+  async getAdminPayments(filters: {
+    status?: string;
+    page: number;
+    limit: number;
+  }) {
+    const { status, page, limit } = filters;
+    const skip = (page - 1) * limit;
+    const where: any = {};
+    if (status) where.payoutStatus = status;
+
+    const [payments, total] = await Promise.all([
+      this.db.payment.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          order: {
+            select: {
+              id: true,
+              finalPrice: true,
+              paymentMethod: true,
+              paymentStatus: true,
+              user: { select: { name: true, phone: true } },
+            },
+          },
+        },
+      }),
+      this.db.payment.count({ where }),
+    ]);
+
+    return { data: payments, total, page, limit, pages: Math.ceil(total / limit) };
+  }
+
+  async updateOrderStatus(orderId: string, status: OrderStatus) {
+    return this.db.order.update({ where: { id: orderId }, data: { paymentStatus: status } });
+  }
+}
