@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { SubscriptionsService } from './subscriptions.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -16,6 +17,8 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { CreateSubscriptionDto } from './dto/create-subscription.dto';
 import { SubscriptionStatus, UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('subscriptions')
+@ApiBearerAuth('JWT')
 @Controller('subscriptions')
 export class SubscriptionsController {
   constructor(private subscriptionsService: SubscriptionsService) {}

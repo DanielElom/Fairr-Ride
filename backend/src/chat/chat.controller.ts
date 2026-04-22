@@ -6,6 +6,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { ChatService } from './chat.service';
 import { ChatGateway } from './chat.gateway';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -15,6 +16,8 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { LogCallDto } from './dto/log-call.dto';
 import { UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('chat')
+@ApiBearerAuth('JWT')
 @UseGuards(JwtAuthGuard)
 @Controller('chat')
 export class ChatController {

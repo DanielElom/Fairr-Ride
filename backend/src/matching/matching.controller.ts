@@ -5,6 +5,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { MatchingService } from './matching.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -14,6 +15,8 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { JobResponseDto } from './dto/job-response.dto';
 import { UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('matching')
+@ApiBearerAuth('JWT')
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles(UserRole.RIDER)
 @Controller('matching')

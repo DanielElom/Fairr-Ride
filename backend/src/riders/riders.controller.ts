@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { RidersService } from './riders.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -19,6 +20,8 @@ import { VerifyRiderDto } from './dto/verify-rider.dto';
 import { ToggleStatusDto } from './dto/toggle-status.dto';
 import { UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('riders')
+@ApiBearerAuth('JWT')
 @UseGuards(JwtAuthGuard)
 @Controller('riders')
 export class RidersController {

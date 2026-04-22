@@ -9,6 +9,7 @@ import {
   Req,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import type { Request } from 'express';
 import { PaymentsService } from './payments.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
@@ -19,6 +20,8 @@ import { InitiatePaymentDto } from './dto/initiate-payment.dto';
 import { CashConfirmDto } from './dto/cash-confirm.dto';
 import { PayoutStatus, UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('payments')
+@ApiBearerAuth('JWT')
 @Controller('payments')
 export class PaymentsController {
   constructor(private paymentsService: PaymentsService) {}

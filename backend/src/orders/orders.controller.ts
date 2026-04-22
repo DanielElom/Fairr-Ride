@@ -7,6 +7,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { OrdersService } from './orders.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -16,6 +17,8 @@ import { CreateOrderDto } from './dto/create-order.dto';
 import { CancelOrderDto } from './dto/cancel-order.dto';
 import { OrderStatus, UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('orders')
+@ApiBearerAuth('JWT')
 @UseGuards(JwtAuthGuard)
 @Controller('orders')
 export class OrdersController {

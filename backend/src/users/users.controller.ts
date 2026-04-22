@@ -9,6 +9,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { ApiTags, ApiBearerAuth } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -21,6 +22,8 @@ import { UpdateStatusDto } from './dto/update-status.dto';
 import { UpdateFcmTokenDto } from './dto/update-fcm-token.dto';
 import { UserRole } from '../../generated/prisma/enums';
 
+@ApiTags('users')
+@ApiBearerAuth('JWT')
 @UseGuards(JwtAuthGuard)
 @Controller('users')
 export class UsersController {
